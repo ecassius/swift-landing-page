@@ -9,7 +9,7 @@
 html,body{width:100%;height:400vh;background:#f5f0eb}
 canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}
 .demo-section{height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;font-size:2.5vw;font-weight:200;color:rgba(0,0,0,0.12);user-select:none}
-.hero{background:linear-gradient(140deg,#ffd6e5 0%,#ffb3c6 42%,#f07060 100%);position:relative}
+.hero{background:linear-gradient(140deg,#ffd6e5 0%,#ffb3c6 42%,#f07060 100%)}
 .demo-section:nth-child(2){background:#1a1a2e;color:rgba(255,255,255,0.1)}
 .demo-section:nth-child(3){background:#fff}
 .demo-section:nth-child(4){background:#ffd6e5;color:rgba(0,0,0,0.1)}
@@ -17,8 +17,8 @@ canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-
 </head>
 <body>
 
-<div class="demo-section hero">hero section — blob pours in here</div>
-<div class="demo-section">dark section — blob follows scroll</div>
+<div class="demo-section hero">hero section</div>
+<div class="demo-section">dark section</div>
 <div class="demo-section">white section</div>
 <div class="demo-section">pink section</div>
 
@@ -31,14 +31,15 @@ const canvas = document.getElementById('lava-canvas');
 const gl = canvas.getContext('webgl', {alpha: true, premultipliedAlpha: false, antialias: false});
 if (!gl) return;
 
-// --- SHADERS ---
 const VS = `attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0,1);}`;
 
+// Single large blob — 3 tightly-coupled metaballs that act as one organic mass
+// No droplets, no tearing. Just one thick viscous form that stretches.
 const FS = `
 precision highp float;
 uniform vec2 u_res;
 uniform float u_time;
-uniform vec3 u_blobs[16];
+uniform vec3 u_blobs[6];
 uniform int u_count;
 
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
@@ -50,13 +51,13 @@ float noise(vec2 p){
 }
 float fbm(vec2 p){
   float v=0.0,a=0.5;
-  for(int i=0;i<3;i++){v+=a*noise(p);p*=2.0;a*=0.5;}
+  for(int i=0;i<4;i++){v+=a*noise(p);p*=2.0;a*=0.5;}
   return v;
 }
 
 float field(vec2 p){
   float f=0.0;
-  for(int i=0;i<16;i++){
+  for(int i=0;i<6;i++){
     if(i>=u_count) break;
     vec2 d=p-u_blobs[i].xy;
     float r=u_blobs[i].z;
@@ -72,48 +73,61 @@ void main(){
 
   float f=field(p);
 
-  float surface=smoothstep(0.92,1.08,f);
+  // Smooth gooey threshold
+  float surface=smoothstep(0.88,1.12,f);
   if(surface<0.005){
     gl_FragColor=vec4(0,0,0,0);
     return;
   }
 
-  float eps=0.002;
+  // Normal from gradient
+  float eps=0.003;
   float fx=field(p+vec2(eps,0))-field(p-vec2(eps,0));
   float fy=field(p+vec2(0,eps))-field(p-vec2(0,eps));
-  vec3 normal=normalize(vec3(-fx,-fy,0.5));
+  vec3 normal=normalize(vec3(-fx,-fy,0.4));
 
-  float turb=fbm(p*10.0+u_time*0.12);
+  // Rich turbulence for oily viscous surface
+  float turb=fbm(p*6.0+u_time*0.08);
+  float turb2=fbm(p*12.0-u_time*0.05+vec2(3.7,1.2));
 
+  // Two-point lighting for glossy oil
   vec3 L1=normalize(vec3(0.5,-0.4,1.0));
   vec3 L2=normalize(vec3(-0.6,0.5,0.7));
   vec3 V=vec3(0,0,1);
 
   float d1=max(dot(normal,L1),0.0);
   float d2=max(dot(normal,L2),0.0);
-  float s1=pow(max(dot(reflect(-L1,normal),V),0.0),50.0);
-  float s2=pow(max(dot(reflect(-L2,normal),V),0.0),30.0);
-  float fresnel=pow(1.0-max(dot(normal,V),0.0),2.5);
+  float s1=pow(max(dot(reflect(-L1,normal),V),0.0),55.0);
+  float s2=pow(max(dot(reflect(-L2,normal),V),0.0),35.0);
+  float fresnel=pow(1.0-max(dot(normal,V),0.0),2.8);
 
+  // #5E4ADA purple palette
   vec3 purple=vec3(0.369,0.290,0.855);
-  vec3 deep=vec3(0.18,0.12,0.50);
-  vec3 lite=vec3(0.50,0.42,0.95);
+  vec3 deep=vec3(0.15,0.10,0.42);
+  vec3 lite=vec3(0.52,0.44,0.96);
 
-  vec3 col=mix(deep,purple,0.4+0.6*(d1*0.7+d2*0.3));
-  col=mix(col,lite,turb*0.12);
-  col+=vec3(1.0,0.97,0.94)*(s1*0.75+s2*0.35);
-  col+=purple*fresnel*0.25;
-  col*=0.93+0.07*turb;
+  // Mix colors with turbulence for oily shifting
+  vec3 col=mix(deep,purple,0.35+0.65*(d1*0.7+d2*0.3));
+  col=mix(col,lite,turb*0.15+turb2*0.05);
 
-  float edge=smoothstep(0.92,1.6,f);
-  col*=0.75+0.25*edge;
+  // Strong specular for wet oily sheen
+  col+=vec3(1.0,0.97,0.94)*(s1*0.8+s2*0.4);
 
-  float alpha=surface*0.95;
+  // Fresnel rim glow
+  col+=purple*fresnel*0.3;
+
+  // Surface texture variation
+  col*=0.90+0.10*turb;
+
+  // Depth at edges
+  float edge=smoothstep(0.88,1.8,f);
+  col*=0.70+0.30*edge;
+
+  float alpha=surface*0.96;
   gl_FragColor=vec4(col*alpha,alpha);
 }
 `;
 
-// --- GL setup ---
 function mkShader(t,src){
   const s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);
   if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}
@@ -136,298 +150,166 @@ const uRes=gl.getUniformLocation(prog,'u_res');
 const uTime=gl.getUniformLocation(prog,'u_time');
 const uCount=gl.getUniformLocation(prog,'u_count');
 const uBlobs=[];
-for(let i=0;i<16;i++) uBlobs[i]=gl.getUniformLocation(prog,'u_blobs['+i+']');
+for(let i=0;i<6;i++) uBlobs[i]=gl.getUniformLocation(prog,'u_blobs['+i+']');
 
 // ==========================================================
-//  BLOB PHYSICS — Pour → Pool → Scroll-follow
+//  PHYSICS — One big blob (3 linked masses), slow & viscous
 // ==========================================================
 
-const HEAD_R   = 0.065;
-const SEG_R    = 0.048;
-const DROP_R   = 0.022;
-const CHAIN_LEN = 6;
-const MAX_DROPS = 8;
-const TEAR_DIST = 0.20;
-const GRAVITY   = -0.0012;  // for the pour phase
+// 3 blobs: one large center + two flanking — they merge into one shape
+// via the metaball field. When scrolling, the flanking ones lag behind
+// creating a stretch effect. No tearing, no droplets.
 
-// Phases
-const PHASE_POUR = 0;
-const PHASE_POOL = 1;
-const PHASE_FOLLOW = 2;
+const R_MAIN = 0.16;   // big center blob
+const R_FLANK = 0.11;  // flanking blobs
+const R_SMALL = 0.07;  // small accent
 
-let phase = PHASE_POUR;
-let pourTime = 0;
-
-// Head starts above the screen (GL y > 1 = above viewport)
-const head = { x: 0, y: 1.6, vx: 0, vy: 0 };
-
-// Chain segments — stacked above head, staggered for stringy pour
-const chain = [];
-for (let i = 0; i < CHAIN_LEN; i++) {
-  chain.push({
-    x: 0,
-    y: 1.6 + (i + 1) * 0.12, // staggered above
-    vx: 0, vy: 0,
-    r: SEG_R * (1 - i * 0.04),
-    attached: true,
-  });
-}
-
-const drops = [];
-
-let scrollY = 0, prevScrollY = 0, scrollVelSmooth = 0;
 let w = 0, h = 0, aspect = 1;
+let scrollY = 0, prevScrollY = 0, scrollVelSmooth = 0;
 let startTime = 0;
-let poolSettleTimer = 0;
+
+// Blob positions in GL space (aspect-corrected x, y 0-1)
+const blobs = [
+  { x:0, y:1.8, vx:0, vy:0, r:R_MAIN },   // main center
+  { x:0, y:2.0, vx:0, vy:0, r:R_FLANK },   // flank top
+  { x:0, y:2.2, vx:0, vy:0, r:R_FLANK },   // flank bottom
+  { x:0, y:2.4, vx:0, vy:0, r:R_SMALL },   // small trailing accent
+];
+
+// Target Y when "pooled" at hero center
+const POOL_Y = 0.50;
+// How far the pour has progressed (0 = above screen, 1 = pooled)
+let pourProgress = 0;
+let pooled = false;
 
 window.addEventListener('scroll', () => { scrollY = window.scrollY; }, { passive: true });
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   w = window.innerWidth; h = window.innerHeight;
-  canvas.width  = Math.floor(w * dpr * 0.65);
-  canvas.height = Math.floor(h * dpr * 0.65);
+  canvas.width  = Math.floor(w * dpr * 0.7);
+  canvas.height = Math.floor(h * dpr * 0.7);
   aspect = w / h;
   gl.viewport(0, 0, canvas.width, canvas.height);
 
-  // Center head horizontally
-  if (phase === PHASE_POUR) {
-    head.x = aspect * 0.5;
-    for (const s of chain) s.x = head.x + (Math.random() - 0.5) * 0.03;
-  }
+  const cx = aspect * 0.5;
+  for (const b of blobs) b.x = cx;
 }
 resize();
 window.addEventListener('resize', resize);
-
-// Pool target: blob rests at bottom-center of the hero (GL y ≈ 0.12)
-function poolTarget() {
-  return { x: aspect * 0.5, y: 0.15 };
-}
 
 function animate(ts) {
   requestAnimationFrame(animate);
   if (!startTime) startTime = ts;
   const t = (ts - startTime) * 0.001;
-  const dt = 1 / 60;
 
   const scrollVelY = scrollY - prevScrollY;
   prevScrollY = scrollY;
-  scrollVelSmooth += (scrollVelY - scrollVelSmooth) * 0.12;
+  scrollVelSmooth += (scrollVelY - scrollVelSmooth) * 0.08; // smooth slowly
 
-  const maxScroll = document.documentElement.scrollHeight - h;
-  const scrollFrac = maxScroll > 0 ? scrollY / maxScroll : 0;
+  const cx = aspect * 0.5;
 
-  // Where the blob "wants" to be vertically in GL space (0=bottom, 1=top)
-  // scrollY=0 → bottom of hero (y≈0.15), scrolling moves it up/down with page
-  const scrollOffsetY = -(scrollY / h) * 1.0; // each viewport scroll = 1.0 in GL
+  // Scroll offset: maps page scroll to GL Y movement
+  // Moves ~0.5 GL units per viewport of scroll (slow, stays on screen)
+  const scrollGLOffset = -(scrollY / h) * 0.5;
 
-  // ======================
-  //  PHASE: POUR
-  // ======================
-  if (phase === PHASE_POUR) {
-    pourTime += dt;
+  // ========================
+  //  POUR PHASE (first ~3 seconds)
+  // ========================
+  if (!pooled) {
+    // Slow, deliberate pour — takes about 2.5 seconds
+    pourProgress += 0.006; // ~0.6% per frame = ~2.7s to complete
 
-    // Gravity pulls head down
-    head.vy += GRAVITY;
-    head.vy *= 0.985; // light air drag during fall
-    head.x += head.vx;
-    head.y += head.vy;
-
-    // Slight wobble as it falls
-    head.vx += Math.sin(t * 8) * 0.0001;
-    head.vx *= 0.98;
-
-    // Chain follows with springy delay — creates the stringy pour
-    let leader = head;
-    for (let i = 0; i < chain.length; i++) {
-      const seg = chain[i];
-      // Each segment starts falling after a stagger delay
-      const segDelay = (i + 1) * 0.08;
-      if (pourTime < segDelay) { leader = seg; continue; }
-
-      seg.vy += GRAVITY;
-      const dx = leader.x - seg.x;
-      const dy = leader.y - seg.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const rest = 0.05;
-      if (d > rest) {
-        const pull = (d - rest) * 0.12;
-        seg.vx += (dx / d) * pull;
-        seg.vy += (dy / d) * pull;
-      }
-      seg.vx *= 0.96;
-      seg.vy *= 0.96;
-      seg.x += seg.vx;
-      seg.y += seg.vy;
-      leader = seg;
+    if (pourProgress >= 1.0) {
+      pourProgress = 1.0;
+      pooled = true;
     }
 
-    // Transition to pool once head reaches hero bottom area
-    if (head.y < 0.2) {
-      head.vy *= 0.3; // dampen on "impact"
-      phase = PHASE_POOL;
-      poolSettleTimer = 0;
+    // Ease: slow start, slow end (smoothstep)
+    const ease = pourProgress * pourProgress * (3 - 2 * pourProgress);
+
+    // Main blob pours from above (y=1.8) to pool center (y=POOL_Y)
+    // Staggered: main arrives first, flanks follow, small last
+    const mainT  = Math.min(1, ease * 1.4);
+    const flankT = Math.min(1, Math.max(0, ease * 1.4 - 0.15));
+    const smallT = Math.min(1, Math.max(0, ease * 1.4 - 0.3));
+
+    const mainE  = mainT * mainT * (3 - 2 * mainT);
+    const flankE = flankT * flankT * (3 - 2 * flankT);
+    const smallE = smallT * smallT * (3 - 2 * smallT);
+
+    blobs[0].y = 1.8 + (POOL_Y - 1.8) * mainE;
+    blobs[0].x = cx + Math.sin(t * 1.5) * 0.01 * mainE;
+
+    blobs[1].y = 2.0 + (POOL_Y + 0.06 - 2.0) * flankE;
+    blobs[1].x = cx - 0.04 * flankE + Math.sin(t * 1.2 + 1) * 0.008 * flankE;
+
+    blobs[2].y = 2.2 + (POOL_Y - 0.06 - 2.2) * flankE;
+    blobs[2].x = cx + 0.04 * flankE + Math.sin(t * 1.0 + 2) * 0.008 * flankE;
+
+    blobs[3].y = 2.4 + (POOL_Y - 0.1 - 2.4) * smallE;
+    blobs[3].x = cx + 0.06 * smallE;
+
+    // Grow radii as they enter (start as a thin stream, fatten)
+    blobs[0].r = R_MAIN * (0.3 + 0.7 * mainE);
+    blobs[1].r = R_FLANK * (0.2 + 0.8 * flankE);
+    blobs[2].r = R_FLANK * (0.2 + 0.8 * flankE);
+    blobs[3].r = R_SMALL * (0.2 + 0.8 * smallE);
+  }
+
+  // ========================
+  //  SCROLL-FOLLOW (after pooled)
+  // ========================
+  if (pooled) {
+    // Base positions — centered, gentle organic drift
+    const driftX = Math.sin(t * 0.3) * 0.03;
+    const driftY = Math.cos(t * 0.22) * 0.015;
+
+    // Target Y follows scroll slowly
+    const targetY = POOL_Y + scrollGLOffset + driftY;
+    const targetX = cx + driftX;
+
+    // Main blob: spring toward target (slow, heavy)
+    blobs[0].vx += (targetX - blobs[0].x) * 0.006;
+    blobs[0].vy += (targetY - blobs[0].y) * 0.006;
+    // Scroll velocity nudge (subtle)
+    blobs[0].vx += scrollVelSmooth * 0.000025;
+    // Very heavy drag = viscous
+    blobs[0].vx *= 0.93;
+    blobs[0].vy *= 0.93;
+    blobs[0].x += blobs[0].vx;
+    blobs[0].y += blobs[0].vy;
+    blobs[0].r = R_MAIN + Math.sin(t * 0.4) * 0.005;
+
+    // Flanking blobs: follow main with lag (creates stretch on scroll)
+    for (let i = 1; i < blobs.length; i++) {
+      const b = blobs[i];
+      const leader = blobs[0];
+
+      // Each flank has a slightly offset rest position
+      const offX = (i === 1 ? -0.04 : i === 2 ? 0.04 : 0.0) + Math.sin(t * 0.35 + i * 2) * 0.02;
+      const offY = (i === 1 ? 0.06 : i === 2 ? -0.06 : -0.12) + Math.cos(t * 0.28 + i * 1.5) * 0.015;
+
+      const tx = leader.x + offX;
+      const ty = leader.y + offY;
+
+      // Softer spring = more lag = more stretch when scrolling
+      const stiffness = i === 3 ? 0.003 : 0.004;
+      b.vx += (tx - b.x) * stiffness;
+      b.vy += (ty - b.y) * stiffness;
+      b.vx *= 0.91;
+      b.vy *= 0.91;
+      b.x += b.vx;
+      b.y += b.vy;
+
+      // Subtle radius breathing
+      b.r = (i === 3 ? R_SMALL : R_FLANK) + Math.sin(t * 0.5 + i) * 0.004;
     }
   }
 
-  // ======================
-  //  PHASE: POOL (settle at hero boundary)
-  // ======================
-  if (phase === PHASE_POOL) {
-    poolSettleTimer += dt;
-    const pool = poolTarget();
-
-    // Head settles into pool position with damped spring
-    head.vx += (pool.x - head.x) * 0.02;
-    head.vy += (pool.y - head.y) * 0.025;
-    head.vx *= 0.88;
-    head.vy *= 0.88;
-    head.x += head.vx;
-    head.y += head.vy;
-
-    // Organic idle wobble
-    head.x += Math.sin(t * 0.6) * 0.0005;
-    head.y += Math.cos(t * 0.45) * 0.0003;
-
-    // Chain segments spring toward head
-    let leader = head;
-    for (let i = 0; i < chain.length; i++) {
-      const seg = chain[i];
-      if (!seg.attached) { leader = seg; continue; }
-      const dx = leader.x - seg.x;
-      const dy = leader.y - seg.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const rest = 0.045;
-      if (d > rest) {
-        const pull = (d - rest) * 0.14;
-        seg.vx += (dx / d) * pull;
-        seg.vy += (dy / d) * pull;
-      }
-      // Spread segments slightly sideways when pooling
-      const spreadX = (i - CHAIN_LEN / 2) * 0.015;
-      seg.vx += (pool.x + spreadX - seg.x) * 0.005;
-      seg.vy += (pool.y - seg.y) * 0.005;
-      seg.vx *= 0.88;
-      seg.vy *= 0.88;
-      seg.x += seg.vx;
-      seg.y += seg.vy;
-      leader = seg;
-    }
-
-    // Once settled, switch to follow mode
-    if (poolSettleTimer > 1.2) {
-      phase = PHASE_FOLLOW;
-    }
-  }
-
-  // ======================
-  //  PHASE: FOLLOW (scroll-driven)
-  // ======================
-  if (phase === PHASE_FOLLOW) {
-    // Base position: centered, offset by scroll
-    const baseX = aspect * 0.5 + Math.sin(t * 0.5) * aspect * 0.12;
-    const baseY = 0.15 + scrollOffsetY + Math.cos(t * 0.35) * 0.04;
-
-    // Scroll velocity nudges sideways for organic feel
-    head.vx += scrollVelSmooth * 0.00012;
-
-    // Spring toward scroll-offset base position
-    head.vx += (baseX - head.x) * 0.012;
-    head.vy += (baseY - head.y) * 0.015;
-
-    // Viscous drag
-    head.vx *= 0.90;
-    head.vy *= 0.90;
-    head.x += head.vx;
-    head.y += head.vy;
-
-    // Chain follows with stretchy springs
-    let leader = head;
-    for (let i = 0; i < chain.length; i++) {
-      const seg = chain[i];
-      if (!seg.attached) {
-        // Detached: drift back toward head
-        const dx = head.x - seg.x;
-        const dy = head.y - seg.y;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        seg.vx += dx * 0.002;
-        seg.vy += dy * 0.002;
-        seg.vx *= 0.95;
-        seg.vy *= 0.95;
-        seg.x += seg.vx;
-        seg.y += seg.vy;
-        // Reattach if close and scroll is calm
-        if (d < 0.09 && Math.abs(scrollVelSmooth) < 4) {
-          seg.attached = true;
-        }
-        continue;
-      }
-
-      const dx = leader.x - seg.x;
-      const dy = leader.y - seg.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const rest = 0.05;
-
-      // TEAR OFF if stretched too far during fast scroll
-      if (d > TEAR_DIST && Math.abs(scrollVelSmooth) > 15) {
-        seg.attached = false;
-        if (drops.length < MAX_DROPS) {
-          drops.push({
-            x: seg.x + (Math.random() - 0.5) * 0.02,
-            y: seg.y + (Math.random() - 0.5) * 0.02,
-            vx: seg.vx * 0.6 + (Math.random() - 0.5) * 0.004,
-            vy: seg.vy * 0.6 + (Math.random() - 0.5) * 0.004,
-            r: DROP_R + Math.random() * 0.012,
-            life: 1.0,
-            age: 0,
-          });
-        }
-        leader = seg;
-        continue;
-      }
-
-      // Spring force
-      if (d > rest) {
-        const pull = (d - rest) * 0.13;
-        const nx = dx / d, ny = dy / d;
-        seg.vx += nx * pull;
-        seg.vy += ny * pull;
-      }
-
-      seg.vx *= 0.86;
-      seg.vy *= 0.86;
-      seg.x += seg.vx;
-      seg.y += seg.vy;
-      leader = seg;
-    }
-
-    // Free droplets drift back to head
-    for (let i = drops.length - 1; i >= 0; i--) {
-      const dr = drops[i];
-      dr.age += dt;
-      const dx = head.x - dr.x;
-      const dy = head.y - dr.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-
-      const pull = dr.age > 1.5 ? 0.0015 : 0.0004;
-      dr.vx += dx * pull;
-      dr.vy += dy * pull;
-      dr.vx *= 0.96;
-      dr.vy *= 0.96;
-      dr.x += dr.vx;
-      dr.y += dr.vy;
-      dr.r *= 0.9997;
-
-      // Remove when rejoined or shrunk
-      if ((d < 0.1 && dr.age > 2.0) || dr.r < 0.006) {
-        drops.splice(i, 1);
-      }
-    }
-  }
-
-  // ======================
+  // ========================
   //  RENDER
-  // ======================
+  // ========================
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.enable(gl.BLEND);
@@ -435,27 +317,12 @@ function animate(ts) {
 
   gl.uniform2f(uRes, canvas.width, canvas.height);
   gl.uniform1f(uTime, t);
+  gl.uniform1i(uCount, blobs.length);
 
-  let idx = 0;
-
-  // Head — pulses slightly with scroll speed
-  const headR = HEAD_R + Math.min(Math.abs(scrollVelSmooth) * 0.0004, 0.03);
-  gl.uniform3f(uBlobs[idx], head.x, head.y, headR);
-  idx++;
-
-  // Chain
-  for (let i = 0; i < chain.length && idx < 16; i++) {
-    gl.uniform3f(uBlobs[idx], chain[i].x, chain[i].y, chain[i].r);
-    idx++;
+  for (let i = 0; i < blobs.length; i++) {
+    gl.uniform3f(uBlobs[i], blobs[i].x, blobs[i].y, blobs[i].r);
   }
 
-  // Drops
-  for (let i = 0; i < drops.length && idx < 16; i++) {
-    gl.uniform3f(uBlobs[idx], drops[i].x, drops[i].y, drops[i].r);
-    idx++;
-  }
-
-  gl.uniform1i(uCount, idx);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 
