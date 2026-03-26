@@ -3,34 +3,42 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>blent — Lava Lamp</title>
+<title>blent — Lava Blob</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#0B0B0B}
-canvas{display:block;width:100%;height:100%}
+html,body{width:100%;height:400vh;background:#f5f0eb}
+canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}
+.demo-section{height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;font-size:2.5vw;font-weight:200;color:rgba(0,0,0,0.12);user-select:none}
+.hero{background:linear-gradient(140deg,#ffd6e5 0%,#ffb3c6 42%,#f07060 100%);position:relative}
+.demo-section:nth-child(2){background:#1a1a2e;color:rgba(255,255,255,0.1)}
+.demo-section:nth-child(3){background:#fff}
+.demo-section:nth-child(4){background:#ffd6e5;color:rgba(0,0,0,0.1)}
 </style>
 </head>
 <body>
+
+<div class="demo-section hero">hero section — blob pours in here</div>
+<div class="demo-section">dark section — blob follows scroll</div>
+<div class="demo-section">white section</div>
+<div class="demo-section">pink section</div>
+
 <canvas id="lava-canvas"></canvas>
 <script>
 (function(){
 'use strict';
 
 const canvas = document.getElementById('lava-canvas');
-const gl = canvas.getContext('webgl', {alpha: false, antialias: false});
-if (!gl) { document.body.style.background='#5E4ADA'; return; }
+const gl = canvas.getContext('webgl', {alpha: true, premultipliedAlpha: false, antialias: false});
+if (!gl) return;
 
-const VS = `
-attribute vec2 a_pos;
-void main(){gl_Position=vec4(a_pos,0,1);}
-`;
+// --- SHADERS ---
+const VS = `attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0,1);}`;
 
 const FS = `
 precision highp float;
 uniform vec2 u_res;
 uniform float u_time;
-uniform float u_scroll;
-uniform vec3 u_blobs[24];
+uniform vec3 u_blobs[16];
 uniform int u_count;
 
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
@@ -42,17 +50,17 @@ float noise(vec2 p){
 }
 float fbm(vec2 p){
   float v=0.0,a=0.5;
-  for(int i=0;i<4;i++){v+=a*noise(p);p*=2.1;a*=0.5;}
+  for(int i=0;i<3;i++){v+=a*noise(p);p*=2.0;a*=0.5;}
   return v;
 }
 
 float field(vec2 p){
   float f=0.0;
-  for(int i=0;i<24;i++){
+  for(int i=0;i<16;i++){
     if(i>=u_count) break;
     vec2 d=p-u_blobs[i].xy;
     float r=u_blobs[i].z;
-    f+=r*r/(dot(d,d)+0.0001);
+    f+=r*r/(dot(d,d)+0.00005);
   }
   return f;
 }
@@ -64,247 +72,391 @@ void main(){
 
   float f=field(p);
 
-  float surface=smoothstep(0.85,1.15,f);
-  if(surface<0.01){
-    gl_FragColor=vec4(vec3(0.043),1.0); // #0B0B0B background
+  float surface=smoothstep(0.92,1.08,f);
+  if(surface<0.005){
+    gl_FragColor=vec4(0,0,0,0);
     return;
   }
 
-  float eps=0.003;
+  float eps=0.002;
   float fx=field(p+vec2(eps,0))-field(p-vec2(eps,0));
   float fy=field(p+vec2(0,eps))-field(p-vec2(0,eps));
-  vec3 normal=normalize(vec3(-fx,-fy,0.45));
+  vec3 normal=normalize(vec3(-fx,-fy,0.5));
 
-  float turb=fbm(p*8.0+u_time*0.15);
-  float turb2=fbm(p*14.0-u_time*0.08);
+  float turb=fbm(p*10.0+u_time*0.12);
 
-  vec3 light1=normalize(vec3(0.4,-0.6,1.0));
-  vec3 light2=normalize(vec3(-0.5,0.3,0.8));
-  vec3 viewDir=vec3(0,0,1);
+  vec3 L1=normalize(vec3(0.5,-0.4,1.0));
+  vec3 L2=normalize(vec3(-0.6,0.5,0.7));
+  vec3 V=vec3(0,0,1);
 
-  float diff1=max(dot(normal,light1),0.0);
-  float diff2=max(dot(normal,light2),0.0);
+  float d1=max(dot(normal,L1),0.0);
+  float d2=max(dot(normal,L2),0.0);
+  float s1=pow(max(dot(reflect(-L1,normal),V),0.0),50.0);
+  float s2=pow(max(dot(reflect(-L2,normal),V),0.0),30.0);
+  float fresnel=pow(1.0-max(dot(normal,V),0.0),2.5);
 
-  float spec1=pow(max(dot(reflect(-light1,normal),viewDir),0.0),45.0);
-  float spec2=pow(max(dot(reflect(-light2,normal),viewDir),0.0),35.0);
+  vec3 purple=vec3(0.369,0.290,0.855);
+  vec3 deep=vec3(0.18,0.12,0.50);
+  vec3 lite=vec3(0.50,0.42,0.95);
 
-  float fresnel=pow(1.0-max(dot(normal,viewDir),0.0),3.0);
+  vec3 col=mix(deep,purple,0.4+0.6*(d1*0.7+d2*0.3));
+  col=mix(col,lite,turb*0.12);
+  col+=vec3(1.0,0.97,0.94)*(s1*0.75+s2*0.35);
+  col+=purple*fresnel*0.25;
+  col*=0.93+0.07*turb;
 
-  vec3 basePurple=vec3(0.369,0.290,0.855);
-  vec3 deepPurple=vec3(0.15,0.08,0.45);
-  vec3 highlight=vec3(0.86,1.0,0.83);
+  float edge=smoothstep(0.92,1.6,f);
+  col*=0.75+0.25*edge;
 
-  vec3 baseColor=mix(deepPurple,basePurple,0.5+0.5*turb);
-  baseColor=mix(baseColor,highlight,turb2*0.08);
-
-  float diffuse=diff1*0.7+diff2*0.3;
-  float specular=spec1*0.9+spec2*0.4;
-
-  vec3 color=baseColor*(0.25+0.75*diffuse);
-  color+=vec3(1.0,0.95,0.9)*specular*0.85;
-  color+=basePurple*fresnel*0.3;
-
-  color*=0.92+0.08*turb;
-
-  float edge=smoothstep(0.85,1.4,f);
-  color*=0.7+0.3*edge;
-
-  gl_FragColor=vec4(color,1.0);
+  float alpha=surface*0.95;
+  gl_FragColor=vec4(col*alpha,alpha);
 }
 `;
 
-function createShader(type, src){
-  const s=gl.createShader(type);
-  gl.shaderSource(s,src);
-  gl.compileShader(s);
-  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
-    console.error(gl.getShaderInfoLog(s));
-    return null;
-  }
+// --- GL setup ---
+function mkShader(t,src){
+  const s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}
   return s;
 }
-const vs=createShader(gl.VERTEX_SHADER,VS);
-const fs=createShader(gl.FRAGMENT_SHADER,FS);
 const prog=gl.createProgram();
-gl.attachShader(prog,vs);
-gl.attachShader(prog,fs);
+gl.attachShader(prog,mkShader(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog,mkShader(gl.FRAGMENT_SHADER,FS));
 gl.linkProgram(prog);
-if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){
-  console.error(gl.getProgramInfoLog(prog));
-}
 gl.useProgram(prog);
 
 const buf=gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER,buf);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
-const aPos=gl.getAttribLocation(prog,'a_pos');
-gl.enableVertexAttribArray(aPos);
-gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+const aP=gl.getAttribLocation(prog,'a_pos');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP,2,gl.FLOAT,false,0,0);
 
 const uRes=gl.getUniformLocation(prog,'u_res');
 const uTime=gl.getUniformLocation(prog,'u_time');
-const uScroll=gl.getUniformLocation(prog,'u_scroll');
 const uCount=gl.getUniformLocation(prog,'u_count');
 const uBlobs=[];
-for(let i=0;i<24;i++) uBlobs[i]=gl.getUniformLocation(prog,'u_blobs['+i+']');
+for(let i=0;i<16;i++) uBlobs[i]=gl.getUniformLocation(prog,'u_blobs['+i+']');
 
-const NUM_BLOBS = 22;
+// ==========================================================
+//  BLOB PHYSICS — Pour → Pool → Scroll-follow
+// ==========================================================
 
-// Logo target positions — blent badge shape (SVG viewBox: 0 0 201 247)
-function getLogoTargets(aspect){
-  const scale=0.55;
-  const svgW=201, svgH=247;
-  const logoH=scale;
-  const logoWA=(logoH*(svgW/svgH));
-  const ox=(aspect-logoWA)/2;
-  const oy=(1-logoH)/2;
+const HEAD_R   = 0.065;
+const SEG_R    = 0.048;
+const DROP_R   = 0.022;
+const CHAIN_LEN = 6;
+const MAX_DROPS = 8;
+const TEAR_DIST = 0.20;
+const GRAVITY   = -0.0012;  // for the pour phase
 
-  function s(sx,sy){
-    return [ox+logoWA*(sx/svgW), oy+logoH*(sy/svgH)];
-  }
+// Phases
+const PHASE_POUR = 0;
+const PHASE_POOL = 1;
+const PHASE_FOLLOW = 2;
 
-  return [
-    // Badge outline
-    s(18, 0),    s(61, 0),    s(98, 38),   s(118, 41),
-    s(170, 70),  s(200, 124), s(192, 216),  s(169, 238),
-    s(139, 247), s(115, 247), s(81, 247),   s(39, 247),
-    s(12, 227),  s(0, 209),   s(0, 18),
-    // Letter anchors (b-l-e-n-t)
-    s(48, 140),  s(76, 140),  s(102, 140),  s(138, 140),  s(168, 140),
-    // Fill
-    s(100, 80),  s(100, 200),
-  ];
-}
+let phase = PHASE_POUR;
+let pourTime = 0;
 
-const blobs = [];
-for(let i=0;i<NUM_BLOBS;i++){
-  blobs.push({
-    x: 0.3+Math.random()*1.2,
-    y: 1.2+Math.random()*0.8,
-    vx: (Math.random()-0.5)*0.002,
-    vy: -0.003-Math.random()*0.004,
-    radius: 0.06+Math.random()*0.09,
-    baseRadius: 0.06+Math.random()*0.09,
-    phase: Math.random()*Math.PI*2,
-    speed: 0.3+Math.random()*0.7,
-    wobbleX: Math.random()*0.3,
-    wobbleY: Math.random()*0.2,
-    drag: 0.92+Math.random()*0.06,
+// Head starts above the screen (GL y > 1 = above viewport)
+const head = { x: 0, y: 1.6, vx: 0, vy: 0 };
+
+// Chain segments — stacked above head, staggered for stringy pour
+const chain = [];
+for (let i = 0; i < CHAIN_LEN; i++) {
+  chain.push({
+    x: 0,
+    y: 1.6 + (i + 1) * 0.12, // staggered above
+    vx: 0, vy: 0,
+    r: SEG_R * (1 - i * 0.04),
+    attached: true,
   });
 }
 
-let scrollFrac = 0;
-let scrollVel = 0;
-let time = 0;
-let w=0, h=0, aspect=1;
-let pourProgress = 0;
+const drops = [];
 
-// Accept external scroll input via postMessage or mouse wheel
-let virtualScroll = 0;
-window.addEventListener('wheel',(e)=>{
-  virtualScroll += e.deltaY*0.0003;
-  virtualScroll = Math.max(0, Math.min(1, virtualScroll));
-  e.preventDefault();
-},{passive:false});
+let scrollY = 0, prevScrollY = 0, scrollVelSmooth = 0;
+let w = 0, h = 0, aspect = 1;
+let startTime = 0;
+let poolSettleTimer = 0;
 
-// Also accept postMessage for embedding
-window.addEventListener('message',(e)=>{
-  if(e.data && typeof e.data.scroll === 'number'){
-    virtualScroll = e.data.scroll;
+window.addEventListener('scroll', () => { scrollY = window.scrollY; }, { passive: true });
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width  = Math.floor(w * dpr * 0.65);
+  canvas.height = Math.floor(h * dpr * 0.65);
+  aspect = w / h;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+
+  // Center head horizontally
+  if (phase === PHASE_POUR) {
+    head.x = aspect * 0.5;
+    for (const s of chain) s.x = head.x + (Math.random() - 0.5) * 0.03;
   }
-});
-
-function resize(){
-  const dpr = Math.min(window.devicePixelRatio||1, 1.5);
-  w = window.innerWidth;
-  h = window.innerHeight;
-  canvas.width = Math.floor(w*dpr*0.65);
-  canvas.height = Math.floor(h*dpr*0.65);
-  canvas.style.width = w+'px';
-  canvas.style.height = h+'px';
-  aspect = w/h;
-  gl.viewport(0,0,canvas.width,canvas.height);
 }
 resize();
-window.addEventListener('resize',resize);
+window.addEventListener('resize', resize);
 
-let prevScroll = 0;
+// Pool target: blob rests at bottom-center of the hero (GL y ≈ 0.12)
+function poolTarget() {
+  return { x: aspect * 0.5, y: 0.15 };
+}
 
-function animate(ts){
+function animate(ts) {
   requestAnimationFrame(animate);
-  time = ts*0.001;
+  if (!startTime) startTime = ts;
+  const t = (ts - startTime) * 0.001;
+  const dt = 1 / 60;
 
-  scrollFrac = virtualScroll;
-  scrollVel = (scrollFrac - prevScroll)*60;
-  prevScroll = scrollFrac;
+  const scrollVelY = scrollY - prevScrollY;
+  prevScrollY = scrollY;
+  scrollVelSmooth += (scrollVelY - scrollVelSmooth) * 0.12;
 
-  pourProgress = Math.min(pourProgress+0.016, 1.0);
+  const maxScroll = document.documentElement.scrollHeight - h;
+  const scrollFrac = maxScroll > 0 ? scrollY / maxScroll : 0;
 
-  const targets = getLogoTargets(aspect);
+  // Where the blob "wants" to be vertically in GL space (0=bottom, 1=top)
+  // scrollY=0 → bottom of hero (y≈0.15), scrolling moves it up/down with page
+  const scrollOffsetY = -(scrollY / h) * 1.0; // each viewport scroll = 1.0 in GL
 
-  const coalesceStart = 0.65;
-  const coalesceFrac = scrollFrac > coalesceStart ?
-    Math.min((scrollFrac-coalesceStart)/(1-coalesceStart), 1) : 0;
-  const coalescePow = coalesceFrac*coalesceFrac*coalesceFrac;
+  // ======================
+  //  PHASE: POUR
+  // ======================
+  if (phase === PHASE_POUR) {
+    pourTime += dt;
 
-  for(let i=0;i<NUM_BLOBS;i++){
-    const b = blobs[i];
-    const stagger = i/NUM_BLOBS;
+    // Gravity pulls head down
+    head.vy += GRAVITY;
+    head.vy *= 0.985; // light air drag during fall
+    head.x += head.vx;
+    head.y += head.vy;
 
-    const pourT = Math.max(0, Math.min(1, (pourProgress-stagger*0.5)*2));
-    const pourEase = pourT*pourT*(3-2*pourT);
+    // Slight wobble as it falls
+    head.vx += Math.sin(t * 8) * 0.0001;
+    head.vx *= 0.98;
 
-    if(pourT < 1){
-      b.y = 1.2 - pourEase * (0.5 + stagger*0.4);
-      b.vy = -pourEase*0.005;
+    // Chain follows with springy delay — creates the stringy pour
+    let leader = head;
+    for (let i = 0; i < chain.length; i++) {
+      const seg = chain[i];
+      // Each segment starts falling after a stagger delay
+      const segDelay = (i + 1) * 0.08;
+      if (pourTime < segDelay) { leader = seg; continue; }
+
+      seg.vy += GRAVITY;
+      const dx = leader.x - seg.x;
+      const dy = leader.y - seg.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const rest = 0.05;
+      if (d > rest) {
+        const pull = (d - rest) * 0.12;
+        seg.vx += (dx / d) * pull;
+        seg.vy += (dy / d) * pull;
+      }
+      seg.vx *= 0.96;
+      seg.vy *= 0.96;
+      seg.x += seg.vx;
+      seg.y += seg.vy;
+      leader = seg;
     }
 
-    const wobbleT = time*b.speed;
-    const floatX = Math.sin(wobbleT+b.phase)*b.wobbleX*0.15;
-    const floatY = Math.cos(wobbleT*0.7+b.phase*1.3)*b.wobbleY*0.1;
-
-    b.vx += scrollVel*0.003*(1+Math.sin(b.phase));
-    b.vy += scrollVel*0.005;
-
-    const cx = aspect*0.5;
-    const cy = 0.5;
-    b.vx += (cx-b.x)*0.0003;
-    b.vy += (cy-b.y)*0.0003;
-
-    b.vx *= b.drag;
-    b.vy *= b.drag;
-    b.x += b.vx + floatX*0.01;
-    b.y += b.vy + floatY*0.01;
-
-    if(coalescePow > 0 && i < targets.length){
-      const tx = targets[i][0];
-      const ty = targets[i][1];
-      b.x = b.x*(1-coalescePow) + tx*coalescePow;
-      b.y = b.y*(1-coalescePow) + ty*coalescePow;
-      b.radius = b.baseRadius*(1-coalescePow*0.3);
-    } else {
-      b.radius = b.baseRadius*(1+0.1*Math.sin(wobbleT*1.3));
+    // Transition to pool once head reaches hero bottom area
+    if (head.y < 0.2) {
+      head.vy *= 0.3; // dampen on "impact"
+      phase = PHASE_POOL;
+      poolSettleTimer = 0;
     }
-
-    if(b.x < 0.05*aspect){b.x=0.05*aspect;b.vx*=-0.5;}
-    if(b.x > 0.95*aspect){b.x=0.95*aspect;b.vx*=-0.5;}
-    if(b.y < 0.05){b.y=0.05;b.vy*=-0.5;}
-    if(b.y > 0.95){b.y=0.95;b.vy*=-0.5;}
   }
 
-  gl.clearColor(0.043,0.043,0.043,1);
+  // ======================
+  //  PHASE: POOL (settle at hero boundary)
+  // ======================
+  if (phase === PHASE_POOL) {
+    poolSettleTimer += dt;
+    const pool = poolTarget();
+
+    // Head settles into pool position with damped spring
+    head.vx += (pool.x - head.x) * 0.02;
+    head.vy += (pool.y - head.y) * 0.025;
+    head.vx *= 0.88;
+    head.vy *= 0.88;
+    head.x += head.vx;
+    head.y += head.vy;
+
+    // Organic idle wobble
+    head.x += Math.sin(t * 0.6) * 0.0005;
+    head.y += Math.cos(t * 0.45) * 0.0003;
+
+    // Chain segments spring toward head
+    let leader = head;
+    for (let i = 0; i < chain.length; i++) {
+      const seg = chain[i];
+      if (!seg.attached) { leader = seg; continue; }
+      const dx = leader.x - seg.x;
+      const dy = leader.y - seg.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const rest = 0.045;
+      if (d > rest) {
+        const pull = (d - rest) * 0.14;
+        seg.vx += (dx / d) * pull;
+        seg.vy += (dy / d) * pull;
+      }
+      // Spread segments slightly sideways when pooling
+      const spreadX = (i - CHAIN_LEN / 2) * 0.015;
+      seg.vx += (pool.x + spreadX - seg.x) * 0.005;
+      seg.vy += (pool.y - seg.y) * 0.005;
+      seg.vx *= 0.88;
+      seg.vy *= 0.88;
+      seg.x += seg.vx;
+      seg.y += seg.vy;
+      leader = seg;
+    }
+
+    // Once settled, switch to follow mode
+    if (poolSettleTimer > 1.2) {
+      phase = PHASE_FOLLOW;
+    }
+  }
+
+  // ======================
+  //  PHASE: FOLLOW (scroll-driven)
+  // ======================
+  if (phase === PHASE_FOLLOW) {
+    // Base position: centered, offset by scroll
+    const baseX = aspect * 0.5 + Math.sin(t * 0.5) * aspect * 0.12;
+    const baseY = 0.15 + scrollOffsetY + Math.cos(t * 0.35) * 0.04;
+
+    // Scroll velocity nudges sideways for organic feel
+    head.vx += scrollVelSmooth * 0.00012;
+
+    // Spring toward scroll-offset base position
+    head.vx += (baseX - head.x) * 0.012;
+    head.vy += (baseY - head.y) * 0.015;
+
+    // Viscous drag
+    head.vx *= 0.90;
+    head.vy *= 0.90;
+    head.x += head.vx;
+    head.y += head.vy;
+
+    // Chain follows with stretchy springs
+    let leader = head;
+    for (let i = 0; i < chain.length; i++) {
+      const seg = chain[i];
+      if (!seg.attached) {
+        // Detached: drift back toward head
+        const dx = head.x - seg.x;
+        const dy = head.y - seg.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        seg.vx += dx * 0.002;
+        seg.vy += dy * 0.002;
+        seg.vx *= 0.95;
+        seg.vy *= 0.95;
+        seg.x += seg.vx;
+        seg.y += seg.vy;
+        // Reattach if close and scroll is calm
+        if (d < 0.09 && Math.abs(scrollVelSmooth) < 4) {
+          seg.attached = true;
+        }
+        continue;
+      }
+
+      const dx = leader.x - seg.x;
+      const dy = leader.y - seg.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const rest = 0.05;
+
+      // TEAR OFF if stretched too far during fast scroll
+      if (d > TEAR_DIST && Math.abs(scrollVelSmooth) > 15) {
+        seg.attached = false;
+        if (drops.length < MAX_DROPS) {
+          drops.push({
+            x: seg.x + (Math.random() - 0.5) * 0.02,
+            y: seg.y + (Math.random() - 0.5) * 0.02,
+            vx: seg.vx * 0.6 + (Math.random() - 0.5) * 0.004,
+            vy: seg.vy * 0.6 + (Math.random() - 0.5) * 0.004,
+            r: DROP_R + Math.random() * 0.012,
+            life: 1.0,
+            age: 0,
+          });
+        }
+        leader = seg;
+        continue;
+      }
+
+      // Spring force
+      if (d > rest) {
+        const pull = (d - rest) * 0.13;
+        const nx = dx / d, ny = dy / d;
+        seg.vx += nx * pull;
+        seg.vy += ny * pull;
+      }
+
+      seg.vx *= 0.86;
+      seg.vy *= 0.86;
+      seg.x += seg.vx;
+      seg.y += seg.vy;
+      leader = seg;
+    }
+
+    // Free droplets drift back to head
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const dr = drops[i];
+      dr.age += dt;
+      const dx = head.x - dr.x;
+      const dy = head.y - dr.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+
+      const pull = dr.age > 1.5 ? 0.0015 : 0.0004;
+      dr.vx += dx * pull;
+      dr.vy += dy * pull;
+      dr.vx *= 0.96;
+      dr.vy *= 0.96;
+      dr.x += dr.vx;
+      dr.y += dr.vy;
+      dr.r *= 0.9997;
+
+      // Remove when rejoined or shrunk
+      if ((d < 0.1 && dr.age > 2.0) || dr.r < 0.006) {
+        drops.splice(i, 1);
+      }
+    }
+  }
+
+  // ======================
+  //  RENDER
+  // ======================
+  gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-  gl.uniform2f(uRes,canvas.width,canvas.height);
-  gl.uniform1f(uTime,time);
-  gl.uniform1f(uScroll,scrollFrac);
-  gl.uniform1i(uCount,NUM_BLOBS);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
 
-  for(let i=0;i<NUM_BLOBS;i++){
-    gl.uniform3f(uBlobs[i],blobs[i].x,blobs[i].y,blobs[i].radius);
+  let idx = 0;
+
+  // Head — pulses slightly with scroll speed
+  const headR = HEAD_R + Math.min(Math.abs(scrollVelSmooth) * 0.0004, 0.03);
+  gl.uniform3f(uBlobs[idx], head.x, head.y, headR);
+  idx++;
+
+  // Chain
+  for (let i = 0; i < chain.length && idx < 16; i++) {
+    gl.uniform3f(uBlobs[idx], chain[i].x, chain[i].y, chain[i].r);
+    idx++;
   }
 
-  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  // Drops
+  for (let i = 0; i < drops.length && idx < 16; i++) {
+    gl.uniform3f(uBlobs[idx], drops[i].x, drops[i].y, drops[i].r);
+    idx++;
+  }
+
+  gl.uniform1i(uCount, idx);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 
 requestAnimationFrame(animate);
