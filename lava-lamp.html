@@ -33,98 +33,120 @@ if (!gl) return;
 
 const VS = `attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0,1);}`;
 
-// Single large blob — 3 tightly-coupled metaballs that act as one organic mass
-// No droplets, no tearing. Just one thick viscous form that stretches.
 const FS = `
 precision highp float;
 uniform vec2 u_res;
 uniform float u_time;
-uniform vec3 u_blobs[6];
-uniform int u_count;
+uniform vec2 u_center;  // blob center position
+uniform float u_radius;  // blob base radius
 
+// --- Noise ---
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float hash2(vec2 p){return fract(sin(dot(p,vec2(269.5,183.3)))*43758.5453);}
+
 float noise(vec2 p){
   vec2 i=floor(p),f=fract(p);
-  f=f*f*(3.0-2.0*f);
+  f=f*f*f*(f*(f*6.0-15.0)+10.0); // quintic interp for smoothness
   return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
              mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
 }
+
 float fbm(vec2 p){
-  float v=0.0,a=0.5;
-  for(int i=0;i<4;i++){v+=a*noise(p);p*=2.0;a*=0.5;}
+  float v=0.0, a=0.5;
+  mat2 rot=mat2(0.8,0.6,-0.6,0.8); // rotate each octave
+  for(int i=0;i<5;i++){
+    v+=a*noise(p);
+    p=rot*p*2.0;
+    a*=0.5;
+  }
   return v;
 }
 
-float field(vec2 p){
-  float f=0.0;
-  for(int i=0;i<6;i++){
-    if(i>=u_count) break;
-    vec2 d=p-u_blobs[i].xy;
-    float r=u_blobs[i].z;
-    f+=r*r/(dot(d,d)+0.00005);
-  }
-  return f;
+// The blob shape: distance from center, distorted by noise
+// Returns <0 inside, >0 outside
+float blobField(vec2 p, vec2 center, float radius){
+  vec2 d = p - center;
+  float dist = length(d);
+
+  // Angle for polar noise distortion
+  float angle = atan(d.y, d.x);
+
+  // Large-scale bulges — makes it very non-spherical
+  float bulge = fbm(vec2(angle*1.5, u_time*0.12) + center*0.5) * 0.45;
+  // Medium globular lumps
+  float lump = fbm(vec2(angle*3.0, u_time*0.08 + 10.0) + center) * 0.2;
+  // Fine surface wobble
+  float fine = noise(vec2(angle*6.0, u_time*0.15 + 20.0)) * 0.08;
+
+  float distorted_radius = radius + radius*(bulge + lump + fine - 0.3);
+
+  return dist - distorted_radius;
 }
 
 void main(){
-  vec2 uv=gl_FragCoord.xy/u_res;
-  float aspect=u_res.x/u_res.y;
-  vec2 p=vec2(uv.x*aspect,uv.y);
+  vec2 uv = gl_FragCoord.xy / u_res;
+  float aspect = u_res.x / u_res.y;
+  vec2 p = vec2(uv.x * aspect, uv.y);
 
-  float f=field(p);
+  float sdf = blobField(p, u_center, u_radius);
 
-  // Low threshold = individual balls vanish into one smooth fluid
-  float surface=smoothstep(0.35,0.55,f);
-  if(surface<0.005){
-    gl_FragColor=vec4(0,0,0,0);
+  // SHARP edge — no blur
+  if(sdf > 0.003){
+    gl_FragColor = vec4(0,0,0,0);
     return;
   }
 
-  // Normal from gradient — wide eps for smooth normals
-  float eps=0.006;
-  float fx=field(p+vec2(eps,0))-field(p-vec2(eps,0));
-  float fy=field(p+vec2(0,eps))-field(p-vec2(0,eps));
-  vec3 normal=normalize(vec3(-fx,-fy,0.4));
+  // Very thin anti-alias band (sharp but not jagged)
+  float alpha = smoothstep(0.003, -0.002, sdf);
 
-  // Rich turbulence for oily viscous surface
-  float turb=fbm(p*6.0+u_time*0.08);
-  float turb2=fbm(p*12.0-u_time*0.05+vec2(3.7,1.2));
+  // --- Normal from SDF gradient ---
+  float eps = 0.004;
+  float gx = blobField(p+vec2(eps,0), u_center, u_radius)
+           - blobField(p-vec2(eps,0), u_center, u_radius);
+  float gy = blobField(p+vec2(0,eps), u_center, u_radius)
+           - blobField(p-vec2(0,eps), u_center, u_radius);
+  vec3 normal = normalize(vec3(-gx, -gy, 0.35));
 
-  // Two-point lighting for glossy oil
-  vec3 L1=normalize(vec3(0.5,-0.4,1.0));
-  vec3 L2=normalize(vec3(-0.6,0.5,0.7));
-  vec3 V=vec3(0,0,1);
+  // --- Surface texture: oily viscous detail ---
+  float turb1 = fbm(p * 8.0 + u_time * 0.06);
+  float turb2 = fbm(p * 14.0 - u_time * 0.04 + vec2(5.0, 3.0));
 
-  float d1=max(dot(normal,L1),0.0);
-  float d2=max(dot(normal,L2),0.0);
-  float s1=pow(max(dot(reflect(-L1,normal),V),0.0),55.0);
-  float s2=pow(max(dot(reflect(-L2,normal),V),0.0),35.0);
-  float fresnel=pow(1.0-max(dot(normal,V),0.0),2.8);
+  // --- Lighting: two-point for oily wet sheen ---
+  vec3 L1 = normalize(vec3(0.5, -0.4, 1.0));
+  vec3 L2 = normalize(vec3(-0.5, 0.4, 0.8));
+  vec3 V  = vec3(0, 0, 1);
 
-  // #5E4ADA purple palette
-  vec3 purple=vec3(0.369,0.290,0.855);
-  vec3 deep=vec3(0.15,0.10,0.42);
-  vec3 lite=vec3(0.52,0.44,0.96);
+  float diff1 = max(dot(normal, L1), 0.0);
+  float diff2 = max(dot(normal, L2), 0.0);
+  float spec1 = pow(max(dot(reflect(-L1, normal), V), 0.0), 60.0);
+  float spec2 = pow(max(dot(reflect(-L2, normal), V), 0.0), 40.0);
+  float fresnel = pow(1.0 - max(dot(normal, V), 0.0), 3.0);
 
-  // Mix colors with turbulence for oily shifting
-  vec3 col=mix(deep,purple,0.35+0.65*(d1*0.7+d2*0.3));
-  col=mix(col,lite,turb*0.15+turb2*0.05);
+  // --- Color: #5E4ADA purple ---
+  vec3 purple = vec3(0.369, 0.290, 0.855);
+  vec3 deep   = vec3(0.14, 0.08, 0.40);
+  vec3 lite   = vec3(0.50, 0.42, 0.96);
 
-  // Strong specular for wet oily sheen
-  col+=vec3(1.0,0.97,0.94)*(s1*0.8+s2*0.4);
+  float diffuse = diff1 * 0.7 + diff2 * 0.3;
+  vec3 col = mix(deep, purple, 0.3 + 0.7 * diffuse);
 
-  // Fresnel rim glow
-  col+=purple*fresnel*0.3;
+  // Oily color shift from turbulence
+  col = mix(col, lite, turb1 * 0.12 + turb2 * 0.06);
 
-  // Surface texture variation
-  col*=0.90+0.10*turb;
+  // Specular highlights — wet oil sheen
+  col += vec3(1.0, 0.96, 0.92) * (spec1 * 0.85 + spec2 * 0.4);
 
-  // Depth at edges
-  float edge=smoothstep(0.35,2.0,f);
-  col*=0.72+0.28*edge;
+  // Fresnel rim
+  col += purple * fresnel * 0.25;
 
-  float alpha=surface*0.96;
-  gl_FragColor=vec4(col*alpha,alpha);
+  // Surface micro-texture
+  col *= 0.92 + 0.08 * turb1;
+
+  // Depth darkening near edge
+  float edgeDepth = smoothstep(0.0, -0.08, sdf);
+  col *= 0.65 + 0.35 * edgeDepth;
+
+  gl_FragColor = vec4(col * alpha, alpha);
 }
 `;
 
@@ -146,182 +168,95 @@ const aP=gl.getAttribLocation(prog,'a_pos');
 gl.enableVertexAttribArray(aP);
 gl.vertexAttribPointer(aP,2,gl.FLOAT,false,0,0);
 
-const uRes=gl.getUniformLocation(prog,'u_res');
-const uTime=gl.getUniformLocation(prog,'u_time');
-const uCount=gl.getUniformLocation(prog,'u_count');
-const uBlobs=[];
-for(let i=0;i<6;i++) uBlobs[i]=gl.getUniformLocation(prog,'u_blobs['+i+']');
+const uRes    = gl.getUniformLocation(prog,'u_res');
+const uTime   = gl.getUniformLocation(prog,'u_time');
+const uCenter = gl.getUniformLocation(prog,'u_center');
+const uRadius = gl.getUniformLocation(prog,'u_radius');
 
 // ==========================================================
-//  PHYSICS — One big blob (3 linked masses), slow & viscous
+//  PHYSICS — single blob, slow, viscous
 // ==========================================================
 
-// 3 blobs: one large center + two flanking — they merge into one shape
-// via the metaball field. When scrolling, the flanking ones lag behind
-// creating a stretch effect. No tearing, no droplets.
+let w=0, h=0, aspect=1;
+let scrollY=0, prevScrollY=0, scrollVelSmooth=0;
+let startTime=0;
 
-const R_MAIN = 0.16;   // big center blob
-const R_FLANK = 0.11;  // flanking blobs
-const R_SMALL = 0.07;  // small accent
+// Blob state
+let blobX=0, blobY=0, blobVX=0, blobVY=0;
+let blobRadius=0; // grows during pour
+const BASE_RADIUS = 0.22;
+let pourDone = false;
 
-let w = 0, h = 0, aspect = 1;
-let scrollY = 0, prevScrollY = 0, scrollVelSmooth = 0;
-let startTime = 0;
+window.addEventListener('scroll', ()=>{ scrollY=window.scrollY; }, {passive:true});
 
-// Blob positions in GL space (aspect-corrected x, y 0-1)
-const blobs = [
-  { x:0, y:1.8, vx:0, vy:0, r:R_MAIN },   // main center
-  { x:0, y:2.0, vx:0, vy:0, r:R_FLANK },   // flank top
-  { x:0, y:2.2, vx:0, vy:0, r:R_FLANK },   // flank bottom
-  { x:0, y:2.4, vx:0, vy:0, r:R_SMALL },   // small trailing accent
-];
-
-// Target Y when "pooled" at hero center
-const POOL_Y = 0.50;
-// How far the pour has progressed (0 = above screen, 1 = pooled)
-let pourProgress = 0;
-let pooled = false;
-
-window.addEventListener('scroll', () => { scrollY = window.scrollY; }, { passive: true });
-
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-  w = window.innerWidth; h = window.innerHeight;
-  canvas.width  = Math.floor(w * dpr * 0.7);
-  canvas.height = Math.floor(h * dpr * 0.7);
-  aspect = w / h;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-
-  const cx = aspect * 0.5;
-  for (const b of blobs) b.x = cx;
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio||1, 1.5);
+  w=window.innerWidth; h=window.innerHeight;
+  canvas.width  = Math.floor(w*dpr*0.75);
+  canvas.height = Math.floor(h*dpr*0.75);
+  aspect = w/h;
+  gl.viewport(0,0,canvas.width,canvas.height);
+  blobX = aspect*0.5;
 }
 resize();
 window.addEventListener('resize', resize);
 
-function animate(ts) {
+function animate(ts){
   requestAnimationFrame(animate);
-  if (!startTime) startTime = ts;
-  const t = (ts - startTime) * 0.001;
+  if(!startTime) startTime=ts;
+  const t = (ts-startTime)*0.001;
 
   const scrollVelY = scrollY - prevScrollY;
   prevScrollY = scrollY;
-  scrollVelSmooth += (scrollVelY - scrollVelSmooth) * 0.08; // smooth slowly
+  scrollVelSmooth += (scrollVelY - scrollVelSmooth) * 0.06;
 
   const cx = aspect * 0.5;
 
-  // Scroll offset: maps page scroll to GL Y movement
-  // Moves ~0.5 GL units per viewport of scroll (slow, stays on screen)
-  const scrollGLOffset = -(scrollY / h) * 0.5;
+  // Scroll offset in GL units (slow: 0.4 per viewport)
+  const scrollGL = -(scrollY / h) * 0.4;
 
-  // ========================
-  //  POUR PHASE (first ~3 seconds)
-  // ========================
-  if (!pooled) {
-    // Slow, deliberate pour — takes about 2.5 seconds
-    pourProgress += 0.006; // ~0.6% per frame = ~2.7s to complete
+  // --- POUR: blob grows from 0 to full size over ~3 seconds ---
+  if(!pourDone){
+    // Starts from top (y=1.1), slides to center (y=0.5)
+    const pourT = Math.min(t / 3.0, 1.0);
+    const ease = pourT < 0.5
+      ? 4*pourT*pourT*pourT
+      : 1 - Math.pow(-2*pourT+2, 3)/2; // ease-in-out cubic
 
-    if (pourProgress >= 1.0) {
-      pourProgress = 1.0;
-      pooled = true;
-    }
+    blobY = 1.1 + (0.5 - 1.1) * ease;
+    blobX = cx;
+    blobRadius = BASE_RADIUS * ease;
 
-    // Ease: slow start, slow end (smoothstep)
-    const ease = pourProgress * pourProgress * (3 - 2 * pourProgress);
-
-    // Main blob pours from above (y=1.8) to pool center (y=POOL_Y)
-    // Staggered: main arrives first, flanks follow, small last
-    const mainT  = Math.min(1, ease * 1.4);
-    const flankT = Math.min(1, Math.max(0, ease * 1.4 - 0.15));
-    const smallT = Math.min(1, Math.max(0, ease * 1.4 - 0.3));
-
-    const mainE  = mainT * mainT * (3 - 2 * mainT);
-    const flankE = flankT * flankT * (3 - 2 * flankT);
-    const smallE = smallT * smallT * (3 - 2 * smallT);
-
-    blobs[0].y = 1.8 + (POOL_Y - 1.8) * mainE;
-    blobs[0].x = cx + Math.sin(t * 1.5) * 0.01 * mainE;
-
-    blobs[1].y = 2.0 + (POOL_Y + 0.06 - 2.0) * flankE;
-    blobs[1].x = cx - 0.04 * flankE + Math.sin(t * 1.2 + 1) * 0.008 * flankE;
-
-    blobs[2].y = 2.2 + (POOL_Y - 0.06 - 2.2) * flankE;
-    blobs[2].x = cx + 0.04 * flankE + Math.sin(t * 1.0 + 2) * 0.008 * flankE;
-
-    blobs[3].y = 2.4 + (POOL_Y - 0.1 - 2.4) * smallE;
-    blobs[3].x = cx + 0.06 * smallE;
-
-    // Grow radii as they enter (start as a thin stream, fatten)
-    blobs[0].r = R_MAIN * (0.3 + 0.7 * mainE);
-    blobs[1].r = R_FLANK * (0.2 + 0.8 * flankE);
-    blobs[2].r = R_FLANK * (0.2 + 0.8 * flankE);
-    blobs[3].r = R_SMALL * (0.2 + 0.8 * smallE);
+    if(pourT >= 1.0) pourDone = true;
   }
 
-  // ========================
-  //  SCROLL-FOLLOW (after pooled)
-  // ========================
-  if (pooled) {
-    // Base positions — centered, gentle organic drift
-    const driftX = Math.sin(t * 0.3) * 0.03;
-    const driftY = Math.cos(t * 0.22) * 0.015;
+  // --- SCROLL FOLLOW ---
+  if(pourDone){
+    const targetX = cx + Math.sin(t*0.25)*0.04;
+    const targetY = 0.5 + scrollGL + Math.cos(t*0.18)*0.02;
 
-    // Target Y follows scroll slowly
-    const targetY = POOL_Y + scrollGLOffset + driftY;
-    const targetX = cx + driftX;
+    // Very slow spring + heavy drag = viscous
+    blobVX += (targetX - blobX) * 0.004;
+    blobVY += (targetY - blobY) * 0.004;
+    blobVX += scrollVelSmooth * 0.000015;
+    blobVX *= 0.94;
+    blobVY *= 0.94;
+    blobX += blobVX;
+    blobY += blobVY;
 
-    // Main blob: spring toward target (slow, heavy)
-    blobs[0].vx += (targetX - blobs[0].x) * 0.006;
-    blobs[0].vy += (targetY - blobs[0].y) * 0.006;
-    // Scroll velocity nudge (subtle)
-    blobs[0].vx += scrollVelSmooth * 0.000025;
-    // Very heavy drag = viscous
-    blobs[0].vx *= 0.93;
-    blobs[0].vy *= 0.93;
-    blobs[0].x += blobs[0].vx;
-    blobs[0].y += blobs[0].vy;
-    blobs[0].r = R_MAIN + Math.sin(t * 0.4) * 0.005;
-
-    // Flanking blobs: follow main with lag (creates stretch on scroll)
-    for (let i = 1; i < blobs.length; i++) {
-      const b = blobs[i];
-      const leader = blobs[0];
-
-      // Each flank has a slightly offset rest position
-      const offX = (i === 1 ? -0.04 : i === 2 ? 0.04 : 0.0) + Math.sin(t * 0.35 + i * 2) * 0.02;
-      const offY = (i === 1 ? 0.06 : i === 2 ? -0.06 : -0.12) + Math.cos(t * 0.28 + i * 1.5) * 0.015;
-
-      const tx = leader.x + offX;
-      const ty = leader.y + offY;
-
-      // Softer spring = more lag = more stretch when scrolling
-      const stiffness = i === 3 ? 0.003 : 0.004;
-      b.vx += (tx - b.x) * stiffness;
-      b.vy += (ty - b.y) * stiffness;
-      b.vx *= 0.91;
-      b.vy *= 0.91;
-      b.x += b.vx;
-      b.y += b.vy;
-
-      // Subtle radius breathing
-      b.r = (i === 3 ? R_SMALL : R_FLANK) + Math.sin(t * 0.5 + i) * 0.004;
-    }
+    blobRadius = BASE_RADIUS;
   }
 
-  // ========================
-  //  RENDER
-  // ========================
-  gl.clearColor(0, 0, 0, 0);
+  // --- RENDER ---
+  gl.clearColor(0,0,0,0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   gl.uniform2f(uRes, canvas.width, canvas.height);
   gl.uniform1f(uTime, t);
-  gl.uniform1i(uCount, blobs.length);
-
-  for (let i = 0; i < blobs.length; i++) {
-    gl.uniform3f(uBlobs[i], blobs[i].x, blobs[i].y, blobs[i].r);
-  }
+  gl.uniform2f(uCenter, blobX, blobY);
+  gl.uniform1f(uRadius, blobRadius);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
