@@ -37,50 +37,76 @@ const FS = `
 precision highp float;
 uniform vec2 u_res;
 uniform float u_time;
-uniform vec2 u_center;  // blob center position
-uniform float u_radius;  // blob base radius
+uniform vec2 u_center;
+uniform float u_radius;
+uniform float u_stretch;    // vertical stretch from scroll velocity
+uniform float u_scrollPos;  // scroll position for shape evolution
 
-// --- Noise ---
-float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float hash2(vec2 p){return fract(sin(dot(p,vec2(269.5,183.3)))*43758.5453);}
+// ---- Noise ----
+vec2 hash2(vec2 p){
+  p=vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3)));
+  return -1.0+2.0*fract(sin(p)*43758.5453);
+}
 
-float noise(vec2 p){
-  vec2 i=floor(p),f=fract(p);
-  f=f*f*f*(f*(f*6.0-15.0)+10.0); // quintic interp for smoothness
-  return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
-             mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+float simplex(vec2 p){
+  const float K1=0.366025404; // (sqrt(3)-1)/2
+  const float K2=0.211324865; // (3-sqrt(3))/6
+  vec2 i=floor(p+(p.x+p.y)*K1);
+  vec2 a=p-i+(i.x+i.y)*K2;
+  float m=step(a.y,a.x);
+  vec2 o=vec2(m,1.0-m);
+  vec2 b=a-o+K2;
+  vec2 c=a-1.0+2.0*K2;
+  vec3 h=max(0.5-vec3(dot(a,a),dot(b,b),dot(c,c)),0.0);
+  vec3 n=h*h*h*h*vec3(dot(a,hash2(i)),dot(b,hash2(i+o)),dot(c,hash2(i+1.0)));
+  return dot(n,vec3(70.0));
 }
 
 float fbm(vec2 p){
   float v=0.0, a=0.5;
-  mat2 rot=mat2(0.8,0.6,-0.6,0.8); // rotate each octave
+  mat2 rot=mat2(0.866,0.5,-0.5,0.866);
   for(int i=0;i<5;i++){
-    v+=a*noise(p);
+    v+=a*simplex(p);
     p=rot*p*2.0;
     a*=0.5;
   }
   return v;
 }
 
-// The blob shape: distance from center, distorted by noise
-// Returns <0 inside, >0 outside
-float blobField(vec2 p, vec2 center, float radius){
+// ---- Blob SDF: organic, noise-displaced, stretch-aware ----
+float blobSDF(vec2 p, vec2 center, float radius, float stretch){
   vec2 d = p - center;
-  float dist = length(d);
 
-  // Angle for polar noise distortion
+  // Apply vertical stretch (elongate when scrolling)
+  d.y /= (1.0 + abs(stretch) * 0.6);
+  // Slight horizontal squash to conserve volume
+  d.x *= (1.0 + abs(stretch) * 0.15);
+
+  float dist = length(d);
   float angle = atan(d.y, d.x);
 
-  // Large-scale bulges — makes it very non-spherical
-  float bulge = fbm(vec2(angle*1.5, u_time*0.12) + center*0.5) * 0.45;
+  // Scroll-driven shape evolution — shape morphs as you scroll through the page
+  float scrollPhase = u_scrollPos * 0.8;
+
+  // Large organic bulges (slow-moving)
+  float bulge = fbm(vec2(angle * 1.2 + scrollPhase, u_time * 0.07)) * 0.40;
   // Medium globular lumps
-  float lump = fbm(vec2(angle*3.0, u_time*0.08 + 10.0) + center) * 0.2;
-  // Fine surface wobble
-  float fine = noise(vec2(angle*6.0, u_time*0.15 + 20.0)) * 0.08;
+  float lump = fbm(vec2(angle * 2.5 + scrollPhase * 0.6, u_time * 0.05 + 7.0)) * 0.18;
+  // Fine surface undulation
+  float fine = simplex(vec2(angle * 5.0, u_time * 0.1 + 15.0)) * 0.06;
 
-  float distorted_radius = radius + radius*(bulge + lump + fine - 0.3);
+  // When still (low stretch), shape is rounder; when scrolling, more distorted
+  float stillness = 1.0 / (1.0 + abs(stretch) * 3.0);
+  float distortion = bulge + lump + fine;
+  distortion = mix(distortion, distortion * 1.4, 1.0 - stillness);
 
-  return dist - distorted_radius;
+  // Idle wobble when still — gentle undulation
+  float wobble = sin(u_time * 0.8 + angle * 2.0) * 0.02 * stillness
+               + sin(u_time * 0.5 - angle * 1.5) * 0.015 * stillness;
+
+  float r = radius + radius * (distortion - 0.15) + wobble;
+
+  return dist - r;
 }
 
 void main(){
@@ -88,63 +114,99 @@ void main(){
   float aspect = u_res.x / u_res.y;
   vec2 p = vec2(uv.x * aspect, uv.y);
 
-  float sdf = blobField(p, u_center, u_radius);
+  float sdf = blobSDF(p, u_center, u_radius, u_stretch);
 
-  // SHARP edge — no blur
-  if(sdf > 0.003){
-    gl_FragColor = vec4(0,0,0,0);
-    return;
-  }
+  // Sharp edge, thin AA
+  if(sdf > 0.002) { gl_FragColor = vec4(0,0,0,0); return; }
+  float alpha = smoothstep(0.002, -0.001, sdf);
 
-  // Very thin anti-alias band (sharp but not jagged)
-  float alpha = smoothstep(0.003, -0.002, sdf);
+  // ---- Normals from SDF gradient + hemisphere Z ----
+  float eps = 0.003;
+  float gx = blobSDF(p+vec2(eps,0),u_center,u_radius,u_stretch)
+           - blobSDF(p-vec2(eps,0),u_center,u_radius,u_stretch);
+  float gy = blobSDF(p+vec2(0,eps),u_center,u_radius,u_stretch)
+           - blobSDF(p-vec2(0,eps),u_center,u_radius,u_stretch);
+  vec2 grad = vec2(gx, gy) / (2.0 * eps);
+  // Hemisphere Z for 3D appearance
+  float gz = sqrt(max(1.0 - dot(grad, grad), 0.0));
+  vec3 N = normalize(vec3(-grad, gz * 0.6));
 
-  // --- Normal from SDF gradient ---
-  float eps = 0.004;
-  float gx = blobField(p+vec2(eps,0), u_center, u_radius)
-           - blobField(p-vec2(eps,0), u_center, u_radius);
-  float gy = blobField(p+vec2(0,eps), u_center, u_radius)
-           - blobField(p-vec2(0,eps), u_center, u_radius);
-  vec3 normal = normalize(vec3(-gx, -gy, 0.35));
+  vec3 V = vec3(0, 0, 1);
 
-  // --- Surface texture: oily viscous detail ---
-  float turb1 = fbm(p * 8.0 + u_time * 0.06);
-  float turb2 = fbm(p * 14.0 - u_time * 0.04 + vec2(5.0, 3.0));
+  // ---- Thickness (distance inside surface) for SSS ----
+  float thickness = clamp(-sdf / u_radius, 0.0, 1.0);
 
-  // --- Lighting: two-point for oily wet sheen ---
-  vec3 L1 = normalize(vec3(0.5, -0.4, 1.0));
-  vec3 L2 = normalize(vec3(-0.5, 0.4, 0.8));
-  vec3 V  = vec3(0, 0, 1);
+  // ---- Surface detail ----
+  float turb = fbm(p * 6.0 + u_time * 0.04 + u_scrollPos * 0.3);
 
-  float diff1 = max(dot(normal, L1), 0.0);
-  float diff2 = max(dot(normal, L2), 0.0);
-  float spec1 = pow(max(dot(reflect(-L1, normal), V), 0.0), 60.0);
-  float spec2 = pow(max(dot(reflect(-L2, normal), V), 0.0), 40.0);
-  float fresnel = pow(1.0 - max(dot(normal, V), 0.0), 3.0);
+  // ---- Modern PBR-ish lighting ----
 
-  // --- Color: #5E4ADA purple ---
-  vec3 purple = vec3(0.369, 0.290, 0.855);
-  vec3 deep   = vec3(0.14, 0.08, 0.40);
-  vec3 lite   = vec3(0.50, 0.42, 0.96);
+  // Key light: above-right, warm
+  vec3 L1 = normalize(vec3(0.3, 0.5, 1.0));
+  // Fill light: left, cool
+  vec3 L2 = normalize(vec3(-0.6, -0.2, 0.8));
+  // Rim light: behind
+  vec3 L3 = normalize(vec3(0.0, -0.8, 0.3));
 
-  float diffuse = diff1 * 0.7 + diff2 * 0.3;
-  vec3 col = mix(deep, purple, 0.3 + 0.7 * diffuse);
+  float NdotL1 = max(dot(N, L1), 0.0);
+  float NdotL2 = max(dot(N, L2), 0.0);
+  float NdotV  = max(dot(N, V), 0.01);
 
-  // Oily color shift from turbulence
-  col = mix(col, lite, turb1 * 0.12 + turb2 * 0.06);
+  // GGX-inspired specular (simplified)
+  float roughness = 0.15;
+  float r2 = roughness * roughness;
+  vec3 H1 = normalize(L1 + V);
+  float NdotH1 = max(dot(N, H1), 0.0);
+  float D1 = r2 / (3.14159 * pow(NdotH1 * NdotH1 * (r2 - 1.0) + 1.0, 2.0));
+  vec3 H2 = normalize(L2 + V);
+  float NdotH2 = max(dot(N, H2), 0.0);
+  float D2 = r2 / (3.14159 * pow(NdotH2 * NdotH2 * (r2 - 1.0) + 1.0, 2.0));
 
-  // Specular highlights — wet oil sheen
-  col += vec3(1.0, 0.96, 0.92) * (spec1 * 0.85 + spec2 * 0.4);
+  // Fresnel (Schlick) — strong rim for glossy wax look
+  float F0 = 0.06;
+  float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
 
-  // Fresnel rim
-  col += purple * fresnel * 0.25;
+  // Fake environment reflection — vertical gradient
+  vec3 refl = reflect(-V, N);
+  vec3 envColor = mix(
+    vec3(0.15, 0.10, 0.35), // warm bottom (deep purple)
+    vec3(0.45, 0.40, 0.75), // lighter top
+    refl.y * 0.5 + 0.5
+  );
 
-  // Surface micro-texture
-  col *= 0.92 + 0.08 * turb1;
+  // ---- Color composition ----
+  vec3 purple = vec3(0.369, 0.290, 0.855); // #5E4ADA
+  vec3 deep   = vec3(0.12, 0.07, 0.35);
+  vec3 mid    = vec3(0.30, 0.22, 0.72);
 
-  // Depth darkening near edge
-  float edgeDepth = smoothstep(0.0, -0.08, sdf);
-  col *= 0.65 + 0.35 * edgeDepth;
+  // Base diffuse
+  vec3 diffuse = mix(deep, purple, 0.3 + 0.6 * NdotL1 + 0.15 * NdotL2);
+
+  // Subtle color variation from turbulence
+  diffuse = mix(diffuse, mid, turb * 0.15);
+
+  // Specular (GGX)
+  vec3 spec = vec3(1.0, 0.97, 0.94) * (D1 * 0.4 + D2 * 0.15);
+
+  // Environment reflection
+  vec3 envRefl = envColor * fresnel * 0.5;
+
+  // Subsurface scattering: thin areas glow warmer
+  float sss = pow(1.0 - thickness, 2.0) * 0.3;
+  vec3 sssColor = vec3(0.50, 0.35, 0.90) * sss;
+
+  // Rim light
+  float rim = pow(1.0 - NdotV, 3.5);
+  vec3 rimColor = vec3(0.40, 0.32, 0.80) * rim * 0.4;
+
+  // Combine
+  vec3 col = diffuse + spec + envRefl + sssColor + rimColor;
+
+  // Depth darkening at edges
+  col *= 0.7 + 0.3 * thickness;
+
+  // Micro surface variation
+  col *= 0.95 + 0.05 * turb;
 
   gl_FragColor = vec4(col * alpha, alpha);
 }
@@ -152,13 +214,14 @@ void main(){
 
 function mkShader(t,src){
   const s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);
-  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error('Shader error:',gl.getShaderInfoLog(s));return null;}
   return s;
 }
 const prog=gl.createProgram();
 gl.attachShader(prog,mkShader(gl.VERTEX_SHADER,VS));
 gl.attachShader(prog,mkShader(gl.FRAGMENT_SHADER,FS));
 gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 
 const buf=gl.createBuffer();
@@ -168,32 +231,34 @@ const aP=gl.getAttribLocation(prog,'a_pos');
 gl.enableVertexAttribArray(aP);
 gl.vertexAttribPointer(aP,2,gl.FLOAT,false,0,0);
 
-const uRes    = gl.getUniformLocation(prog,'u_res');
-const uTime   = gl.getUniformLocation(prog,'u_time');
-const uCenter = gl.getUniformLocation(prog,'u_center');
-const uRadius = gl.getUniformLocation(prog,'u_radius');
+const uRes       = gl.getUniformLocation(prog,'u_res');
+const uTime      = gl.getUniformLocation(prog,'u_time');
+const uCenter    = gl.getUniformLocation(prog,'u_center');
+const uRadius    = gl.getUniformLocation(prog,'u_radius');
+const uStretch   = gl.getUniformLocation(prog,'u_stretch');
+const uScrollPos = gl.getUniformLocation(prog,'u_scrollPos');
 
 // ==========================================================
-//  PHYSICS — single blob, slow, viscous
+//  PHYSICS
 // ==========================================================
 
 let w=0, h=0, aspect=1;
-let scrollY=0, prevScrollY=0, scrollVelSmooth=0;
+let scrollY=0, prevScrollY=0;
+let scrollVelSmooth=0;  // smoothed scroll velocity
+let stretchSmooth=0;    // smoothed stretch value for shader
 let startTime=0;
 
-// Blob state
-let blobX=0, blobY=0, blobVX=0, blobVY=0;
-let blobRadius=0; // grows during pour
-const BASE_RADIUS = 0.22;
-let pourDone = false;
+let blobX=0, blobY=0;
+let blobRadius=0;
+const BASE_RADIUS = 0.25;
 
 window.addEventListener('scroll', ()=>{ scrollY=window.scrollY; }, {passive:true});
 
 function resize(){
   const dpr = Math.min(window.devicePixelRatio||1, 1.5);
   w=window.innerWidth; h=window.innerHeight;
-  canvas.width  = Math.floor(w*dpr*0.75);
-  canvas.height = Math.floor(h*dpr*0.75);
+  canvas.width  = Math.floor(w*dpr*0.7);
+  canvas.height = Math.floor(h*dpr*0.7);
   aspect = w/h;
   gl.viewport(0,0,canvas.width,canvas.height);
   blobX = aspect*0.5;
@@ -206,48 +271,42 @@ function animate(ts){
   if(!startTime) startTime=ts;
   const t = (ts-startTime)*0.001;
 
-  const scrollVelY = scrollY - prevScrollY;
+  // Scroll velocity
+  const scrollVelRaw = scrollY - prevScrollY;
   prevScrollY = scrollY;
-  scrollVelSmooth += (scrollVelY - scrollVelSmooth) * 0.06;
+  scrollVelSmooth += (scrollVelRaw - scrollVelSmooth) * 0.08;
 
+  // Normalized scroll position (0-1 through the page)
+  const maxScroll = document.documentElement.scrollHeight - h;
+  const scrollFrac = maxScroll > 0 ? scrollY / maxScroll : 0;
+
+  // ---- Pour: grow radius over first 3 seconds ----
+  const pourT = Math.min(t / 3.0, 1.0);
+  const pourEase = pourT < 0.5
+    ? 4*pourT*pourT*pourT
+    : 1 - Math.pow(-2*pourT+2, 3)/2;
+
+  // ---- Blob stays centered, gentle drift ----
   const cx = aspect * 0.5;
+  const cy = 0.50;
+  blobX = cx + Math.sin(t * 0.2) * 0.02;
+  blobY = cy + Math.cos(t * 0.15) * 0.015;
 
-  // Scroll offset in GL units (slow: 0.4 per viewport)
-  const scrollGL = -(scrollY / h) * 0.4;
-
-  // --- POUR: blob grows from 0 to full size over ~3 seconds ---
-  if(!pourDone){
-    // Starts from top (y=1.1), slides to center (y=0.5)
-    const pourT = Math.min(t / 3.0, 1.0);
-    const ease = pourT < 0.5
-      ? 4*pourT*pourT*pourT
-      : 1 - Math.pow(-2*pourT+2, 3)/2; // ease-in-out cubic
-
-    blobY = 1.1 + (0.5 - 1.1) * ease;
+  // During pour, start from top
+  if(pourT < 1.0){
+    blobY = 1.15 + (cy - 1.15) * pourEase;
     blobX = cx;
-    blobRadius = BASE_RADIUS * ease;
-
-    if(pourT >= 1.0) pourDone = true;
   }
 
-  // --- SCROLL FOLLOW ---
-  if(pourDone){
-    const targetX = cx + Math.sin(t*0.25)*0.04;
-    const targetY = 0.5 + scrollGL + Math.cos(t*0.18)*0.02;
+  blobRadius = BASE_RADIUS * pourEase;
 
-    // Very slow spring + heavy drag = viscous
-    blobVX += (targetX - blobX) * 0.004;
-    blobVY += (targetY - blobY) * 0.004;
-    blobVX += scrollVelSmooth * 0.000015;
-    blobVX *= 0.94;
-    blobVY *= 0.94;
-    blobX += blobVX;
-    blobY += blobVY;
+  // ---- Stretch: scroll velocity → vertical elongation ----
+  // Positive stretch = elongated vertically (scrolling down)
+  // Decays back to 0 when still (coalesces)
+  const targetStretch = scrollVelSmooth * 0.008;
+  stretchSmooth += (targetStretch - stretchSmooth) * 0.05; // slow decay = viscous
 
-    blobRadius = BASE_RADIUS;
-  }
-
-  // --- RENDER ---
+  // ---- Render ----
   gl.clearColor(0,0,0,0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.enable(gl.BLEND);
@@ -257,6 +316,8 @@ function animate(ts){
   gl.uniform1f(uTime, t);
   gl.uniform2f(uCenter, blobX, blobY);
   gl.uniform1f(uRadius, blobRadius);
+  gl.uniform1f(uStretch, stretchSmooth);
+  gl.uniform1f(uScrollPos, scrollFrac);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
