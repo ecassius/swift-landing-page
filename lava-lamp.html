@@ -73,15 +73,15 @@ void main(){
 
   float f=field(p);
 
-  // Smooth gooey threshold
-  float surface=smoothstep(0.88,1.12,f);
+  // Low threshold = individual balls vanish into one smooth fluid
+  float surface=smoothstep(0.35,0.55,f);
   if(surface<0.005){
     gl_FragColor=vec4(0,0,0,0);
     return;
   }
 
-  // Normal from gradient
-  float eps=0.003;
+  // Normal from gradient — wide eps for smooth normals
+  float eps=0.006;
   float fx=field(p+vec2(eps,0))-field(p-vec2(eps,0));
   float fy=field(p+vec2(0,eps))-field(p-vec2(0,eps));
   vec3 normal=normalize(vec3(-fx,-fy,0.4));
@@ -120,8 +120,8 @@ void main(){
   col*=0.90+0.10*turb;
 
   // Depth at edges
-  float edge=smoothstep(0.88,1.8,f);
-  col*=0.70+0.30*edge;
+  float edge=smoothstep(0.35,2.0,f);
+  col*=0.72+0.28*edge;
 
   float alpha=surface*0.96;
   gl_FragColor=vec4(col*alpha,alpha);
